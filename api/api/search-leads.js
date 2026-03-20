@@ -1,98 +1,61 @@
-exports.handler = async (event, context) => {
-  // Only allow POST requests
-  if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      body: JSON.stringify({ error: 'Method not allowed' })
-    };
+export default async function handler(req) {
+  if (req.method !== 'POST') {
+    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405 });
   }
 
   try {
-    const { apiKey, action, data } = JSON.parse(event.body);
+    const { action, data } = JSON.parse(req.body);
 
-    if (!apiKey || !apiKey.startsWith('sk-ant-')) {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: 'Invalid API key' })
-      };
-    }
-
-    let requestBody;
-
-    if (action === 'test') {
-      // Test connection
-      requestBody = {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 10,
-        messages: [{ role: "user", content: "test" }]
-      };
-    } else if (action === 'search') {
-      // Web search
-      requestBody = {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
-        tools: [{
-          type: "web_search_20250305",
-          name: "web_search"
-        }],
-        messages: [{
-          role: "user",
-          content: data.query
-        }]
-      };
-    } else if (action === 'extract') {
-      // Extract leads
-      requestBody = {
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 2000,
-        messages: data.messages
-      };
-    } else {
-      return {
-        statusCode: 400,
-        body: JSON.stringify({ error: 'Invalid action' })
-      };
-    }
-
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01'
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    const responseData = await response.json();
-
-    if (!response.ok) {
-      return {
-        statusCode: response.status,
+    if (action === 'search') {
+      const tavilyRes = await fetch('https://api.tavily.com/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          error: responseData.error?.message || 'API request failed',
-          details: responseData
+          api_key: process.env.TAVILY_API_KEY,
+          query: data.query,
+          search_depth: 'advanced',
+          max_results: 8
         })
-      };
+      });
+      const tavilyData = await tavilyRes.json();
+
+      return new Response(JSON.stringify({ content: tavilyData.results || [] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      });
     }
 
-    return {
-      statusCode: 200,
-      headers: {
-        'Content-Type': 'application/json',
-        'Access-Control-Allow-Origin': '*'
-      },
-      body: JSON.stringify(responseData)
-    };
+    if (action === 'extract') {
+      const messages = [
+        { role: "system", content: "You are a precise JSON extractor. Return ONLY a valid JSON array of leads. No explanations, no markdown." },
+        ...data.messages
+      ];
 
+      const groqRes = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: messages,
+          max_tokens: 2000,
+          temperature: 0.2
+        })
+      });
+      const groqData = await groqRes.json();
+      const text = groqData.choices?.[0]?.message?.content || '[]';
+
+      return new Response(JSON.stringify({ content: [{ type: 'text', text }] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      });
+    }
+
+    return new Response(JSON.stringify({ error: 'Invalid action' }), { status: 400 });
   } catch (error) {
     console.error('Function error:', error);
-    return {
-      statusCode: 500,
-      body: JSON.stringify({
-        error: 'Internal server error',
-        message: error.message
-      })
-    };
+    return new Response(JSON.stringify({ error: 'Internal server error', message: error.message }), { status: 500 });
   }
-};
+}
